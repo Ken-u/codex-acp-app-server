@@ -96,3 +96,23 @@ declare module "node:readline" {
 
   export { createInterface };
 }
+
+declare module "node:crypto" {
+  function randomUUID(): string;
+
+  export { randomUUID };
+}
+
+declare module "node:fs/promises" {
+  function readFile(path: string, encoding: string): Promise<string>;
+  function mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+  function writeFile(path: string, data: string, encoding: string): Promise<void>;
+
+  export { readFile, mkdir, writeFile };
+}
+
+declare module "node:path" {
+  function join(...paths: string[]): string;
+
+  export { join };
+}
