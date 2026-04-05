@@ -1,6 +1,10 @@
 # codex-acp-app-server
 
-一个最小可用的 ACP over stdio bridge。它把上游 ACP client 的一条用户消息，转成对 `codex app-server` 的 `thread/start` 和 `turn/start` 调用，并把 app-server 的流式事件重新输出为最小 JSON-RPC 通知。
+一个最小可用的 ACP over stdio bridge。它把上游 ACP client 或 ACPX 的 session/prompt 请求，转成对 `codex app-server` 的 `thread/start` 和 `turn/start` 调用，并把 app-server 的流式事件重新输出为 ACP/JSON-RPC 通知。
+
+- 语言：TypeScript + Node.js
+- 后端：`codex app-server` over stdio JSON-RPC
+- 目标：最小可运行、可验证、可被 ACPX 驱动
 
 ## 目录结构
 
@@ -13,6 +17,7 @@ codex-acp-app-server/
     ├── bridge.ts
     ├── codexClient.ts
     ├── index.ts
+    ├── sessionStore.ts
     └── shims-node.d.ts
 ```
 
@@ -178,7 +183,9 @@ node dist/index.js
 
 - `initialize`
 - `session/new`
+- `session/load`
 - `session/prompt`
+- `session/set_mode`
 - `session/cancel`
 - `session/update`（通知）
 
@@ -258,5 +265,11 @@ acpx --agent 'node /absolute/path/to/codex-acp-app-server/dist/index.js' \
 预期现象：
 
 - `alpha` 会先走 `session/load`
+- `alpha` 的回答应体现 `plan` 模式
+- `beta` 应保持 `default` 模式
+
+## License
+
+MIT
 - `alpha` 的回答表现为 `plan` 模式
 - `beta` 仍保持 `default` 模式

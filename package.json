@@ -2,6 +2,7 @@
   "name": "codex-acp-app-server",
   "version": "0.1.0",
   "description": "Minimal ACP-over-stdio bridge backed by codex app-server",
+  "license": "MIT",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
