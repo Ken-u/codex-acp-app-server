@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Minimal ACP-over-stdio bridge backed by codex app-server",
   "license": "MIT",
-  "private": true,
   "main": "dist/index.js",
   "bin": {
     "codex-acp-app-server": "dist/index.js"
@@ -16,8 +15,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "prepack": "npm run build",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json && node dist/index.js"
   },
   "engines": {
     "node": ">=18"

@@ -93,6 +93,46 @@ codex-acp-app-server
 
 包里已经配置了 `bin` 入口，所以以后如果发布到 npm，也可以直接作为 CLI 使用。
 
+## GitHub 全局安装验证
+
+先做本地构建验证：
+
+```bash
+npm install
+npm run build
+node dist/index.js
+```
+
+然后验证 GitHub 直接全局安装：
+
+```bash
+npm uninstall -g codex-acp-app-server || true
+npm install -g github:Ken-u/codex-acp-app-server
+which codex-acp-app-server
+codex-acp-app-server
+```
+
+预期现象：
+
+- `npm install -g github:Ken-u/codex-acp-app-server` 能成功完成
+- `which codex-acp-app-server` 能输出全局命令路径
+- `codex-acp-app-server` 能直接启动
+
+如果命令仍不可用，按下面步骤排查：
+
+```bash
+npm root -g
+ls -la "$(npm root -g)/codex-acp-app-server"
+cat "$(npm root -g)/codex-acp-app-server/package.json"
+ls -la /opt/homebrew/bin | grep codex-acp-app-server
+```
+
+重点检查：
+
+- 全局安装目录里是否存在 `dist/index.js`
+- 全局安装目录里的 `package.json` 是否保留了正确的 `bin` 配置
+- Homebrew 的全局可执行目录里是否生成了 `codex-acp-app-server` 链接
+
 ## bridge 行为
 
 上游发送一条 `message` 请求后，bridge 会：
