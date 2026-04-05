@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { Bridge } from "./bridge";
 import { CodexClient } from "./codexClient";
 

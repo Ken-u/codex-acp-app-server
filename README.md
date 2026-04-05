@@ -65,6 +65,34 @@ npm run build
 node dist/index.js
 ```
 
+## 直接从 GitHub 使用
+
+当前推荐直接从 GitHub 仓库安装或运行：
+
+全局安装：
+
+```bash
+npm install -g github:Ken-u/codex-acp-app-server
+codex-acp-app-server
+```
+
+一次性运行：
+
+```bash
+npx github:Ken-u/codex-acp-app-server
+```
+
+配合环境变量：
+
+```bash
+CODEX_EXECUTABLE=codex \
+CODEX_MODEL=gpt-5.4 \
+CODEX_CWD=/absolute/path/to/workspace \
+codex-acp-app-server
+```
+
+包里已经配置了 `bin` 入口，所以以后如果发布到 npm，也可以直接作为 CLI 使用。
+
 ## bridge 行为
 
 上游发送一条 `message` 请求后，bridge 会：
