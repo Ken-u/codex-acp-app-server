@@ -61,7 +61,7 @@ ACP 细节这里按“最小可运行假设”实现：
 
 ```bash
 npm install
-npm run build
+npx tsc -p tsconfig.json
 node dist/index.js
 ```
 
@@ -91,7 +91,7 @@ CODEX_CWD=/absolute/path/to/workspace \
 codex-acp-app-server
 ```
 
-包里已经配置了 `bin` 入口，所以以后如果发布到 npm，也可以直接作为 CLI 使用。
+仓库里已经提交了 `dist/` 和 `bin` 入口，GitHub 直接安装不会依赖安装时临时构建。
 
 ## GitHub 全局安装验证
 
@@ -99,7 +99,7 @@ codex-acp-app-server
 
 ```bash
 npm install
-npm run build
+npx tsc -p tsconfig.json
 node dist/index.js
 ```
 
