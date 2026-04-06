@@ -67,16 +67,7 @@ node dist/index.js
 
 ## 直接从 GitHub 使用
 
-当前推荐直接从 GitHub 仓库安装或运行：
-
-全局安装：
-
-```bash
-npm install -g github:Ken-u/codex-acp-app-server
-codex-acp-app-server
-```
-
-一次性运行：
+当前推荐直接从 GitHub 仓库用 `npx` 运行：
 
 ```bash
 npx github:Ken-u/codex-acp-app-server
@@ -93,9 +84,9 @@ codex-acp-app-server
 
 仓库里已经提交了 `dist/` 和 `bin` 入口，GitHub 直接安装不会依赖安装时临时构建。
 
-## GitHub 全局安装验证
+## GitHub 直接运行验证
 
-先做本地构建验证：
+先做本地编译验证：
 
 ```bash
 npm install
@@ -103,35 +94,24 @@ npx tsc -p tsconfig.json
 node dist/index.js
 ```
 
-然后验证 GitHub 直接全局安装：
+然后验证 GitHub 直接运行：
 
 ```bash
-npm uninstall -g codex-acp-app-server || true
-npm install -g github:Ken-u/codex-acp-app-server
-which codex-acp-app-server
-codex-acp-app-server
+npx github:Ken-u/codex-acp-app-server
 ```
 
-预期现象：
-
-- `npm install -g github:Ken-u/codex-acp-app-server` 能成功完成
-- `which codex-acp-app-server` 能输出全局命令路径
-- `codex-acp-app-server` 能直接启动
-
-如果命令仍不可用，按下面步骤排查：
+如果你需要给 ACPX 或其他宿主指定工作目录，可以这样运行：
 
 ```bash
-npm root -g
-ls -la "$(npm root -g)/codex-acp-app-server"
-cat "$(npm root -g)/codex-acp-app-server/package.json"
-ls -la /opt/homebrew/bin | grep codex-acp-app-server
+CODEX_CWD=/absolute/path/to/workspace \
+npx github:Ken-u/codex-acp-app-server
 ```
 
-重点检查：
+说明：
 
-- 全局安装目录里是否存在 `dist/index.js`
-- 全局安装目录里的 `package.json` 是否保留了正确的 `bin` 配置
-- Homebrew 的全局可执行目录里是否生成了 `codex-acp-app-server` 链接
+- 当前 README 只保留 `npx github:...` 用法
+- 不再说明 `npm install -g github:...` 的全局安装方式
+- 仓库里已提交 `dist/`，因此 `npx` 运行不会依赖安装时临时构建
 
 ## bridge 行为
 
