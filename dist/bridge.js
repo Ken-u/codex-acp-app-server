@@ -41,10 +41,11 @@ class Bridge {
     client;
     store;
     sessions = new Map();
+    pendingClientRequests = new Map();
     initialized = false;
     stdinClosed = false;
     activeRequests = 0;
-    requestQueue = Promise.resolve();
+    nextClientRequestId = 1;
     constructor(client, cwd) {
         this.client = client;
         this.store = new sessionStore_1.SessionStore(cwd);
@@ -57,11 +58,10 @@ class Bridge {
         });
         rl.on("line", (line) => {
             this.activeRequests += 1;
-            this.requestQueue = this.requestQueue
-                .catch(() => {
-                return;
+            void this.handleLine(line)
+                .catch((error) => {
+                this.log(`Failed to handle stdin line: ${this.toErrorMessage(error)}`);
             })
-                .then(() => this.handleLine(line))
                 .finally(() => {
                 this.activeRequests -= 1;
                 this.maybeShutdown();
@@ -82,14 +82,19 @@ class Bridge {
         if (!trimmed) {
             return;
         }
-        let request;
+        let message;
         try {
-            request = JSON.parse(trimmed);
+            message = JSON.parse(trimmed);
         }
         catch (error) {
             this.log(`Ignoring invalid stdin JSON: ${String(error)}: ${trimmed}`);
             return;
         }
+        if (this.isClientResponse(message)) {
+            this.handleClientResponse(message);
+            return;
+        }
+        const request = message;
         if (typeof request.id === "undefined" || typeof request.method !== "string") {
             this.log(`Ignoring invalid request envelope: ${trimmed}`);
             return;
@@ -456,12 +461,20 @@ class Bridge {
                 cleanup();
                 reject(error);
             };
+            const onServerRequest = (request) => {
+                void this.handleCodexServerRequest(sessionId, threadId, turnId, request).catch((error) => {
+                    cleanup();
+                    reject(error instanceof Error ? error : new Error(String(error)));
+                });
+            };
             const cleanup = () => {
                 this.client.off("notification", onNotification);
                 this.client.off("fatalError", onFatalError);
+                this.client.off("serverRequest", onServerRequest);
             };
             this.client.on("notification", onNotification);
             this.client.on("fatalError", onFatalError);
+            this.client.on("serverRequest", onServerRequest);
             try {
                 const started = await this.client.startTurn(threadId, text, options.collaborationMode);
                 turnId = started.turnId;
@@ -506,6 +519,140 @@ class Bridge {
     }
     write(payload) {
         process.stdout.write(`${JSON.stringify(payload)}\n`);
+    }
+    isClientResponse(message) {
+        return typeof message.id !== "undefined" && typeof message.method === "undefined";
+    }
+    handleClientResponse(message) {
+        const pending = this.pendingClientRequests.get(message.id);
+        if (!pending) {
+            this.log(`Ignoring unexpected client response for id ${String(message.id)}`);
+            return;
+        }
+        this.pendingClientRequests.delete(message.id);
+        if (message.error) {
+            pending.reject(new Error(this.describeJsonRpcError(message.error)));
+            return;
+        }
+        pending.resolve(message.result);
+    }
+    async handleCodexServerRequest(sessionId, threadId, turnId, request) {
+        switch (request.method) {
+            case "item/tool/requestUserInput": {
+                const result = await this.collectUserInput(sessionId, threadId, turnId, request.params);
+                this.client.sendResponse(request.id, result);
+                return;
+            }
+            default:
+                this.log(`Received unsupported server request: ${request.method}`);
+                this.client.sendErrorResponse(request.id, -32601, `Unsupported server request: ${request.method}`);
+        }
+    }
+    async collectUserInput(sessionId, threadId, turnId, params) {
+        const questions = Array.isArray(params?.questions) ? params.questions : [];
+        if (questions.length === 0) {
+            throw new Error("requestUserInput did not contain any questions");
+        }
+        const answers = {};
+        for (const question of questions) {
+            if (!question || typeof question !== "object" || typeof question.id !== "string") {
+                continue;
+            }
+            const response = await this.collectSingleAnswer(sessionId, threadId, turnId, question);
+            answers[question.id] = {
+                answers: response
+            };
+        }
+        return { answers };
+    }
+    async collectSingleAnswer(sessionId, threadId, turnId, question) {
+        if (Array.isArray(question.options) && question.options.length > 0) {
+            return this.requestPermissionAnswer(sessionId, threadId, turnId, question);
+        }
+        return this.requestCustomUserInput(sessionId, threadId, turnId, question);
+    }
+    async requestPermissionAnswer(sessionId, threadId, turnId, question) {
+        const permissionKinds = [
+            "allow_once",
+            "allow_always",
+            "reject_once",
+            "reject_always"
+        ];
+        const options = question.options
+            .map((option, index) => {
+            if (!option ||
+                typeof option !== "object" ||
+                typeof option.label !== "string" ||
+                index >= permissionKinds.length) {
+                return null;
+            }
+            return {
+                optionId: `choice-${index}`,
+                name: option.label,
+                kind: permissionKinds[index],
+                _meta: typeof option.description === "string" && option.description.trim() !== ""
+                    ? { description: option.description }
+                    : undefined
+            };
+        })
+            .filter((option) => Boolean(option));
+        if (options.length === 0) {
+            return this.requestCustomUserInput(sessionId, threadId, turnId, question);
+        }
+        const permissionResult = (await this.sendClientRequest("session/request_permission", {
+            sessionId,
+            toolCall: {
+                toolCallId: `request-user-input:${question.id}`,
+                title: typeof question.question === "string" ? question.question : "User input requested",
+                kind: "other",
+                status: "pending",
+                rawInput: {
+                    threadId,
+                    turnId,
+                    question
+                }
+            },
+            options
+        }));
+        const outcome = permissionResult?.outcome?.outcome;
+        if (outcome !== "selected") {
+            throw new Error(`User input request was not completed: ${outcome ?? "cancelled"}`);
+        }
+        const selected = options.find((option) => option.optionId === permissionResult.outcome?.optionId);
+        if (!selected) {
+            throw new Error("User input request returned an unknown option");
+        }
+        return [selected.name];
+    }
+    async requestCustomUserInput(sessionId, threadId, turnId, question) {
+        const result = (await this.sendClientRequest("_codex/request_user_input", {
+            sessionId,
+            threadId,
+            turnId,
+            question
+        }));
+        if (!result || !Array.isArray(result.answers) || result.answers.length === 0) {
+            throw new Error("User input request returned no answers");
+        }
+        return result.answers.filter((answer) => typeof answer === "string" && answer.trim() !== "");
+    }
+    sendClientRequest(method, params) {
+        const id = this.nextClientRequestId++;
+        return new Promise((resolve, reject) => {
+            this.pendingClientRequests.set(id, { resolve, reject });
+            this.write({
+                jsonrpc: "2.0",
+                id,
+                method,
+                params
+            });
+        });
+    }
+    describeJsonRpcError(error) {
+        if (typeof error.data === "undefined") {
+            return `RPC ${error.code}: ${error.message}`;
+        }
+        return `RPC ${error.code}: ${error.message} (${JSON.stringify(error.data)})`;
     }
     formatPlan(explanation, plan) {
         const parts = [];

@@ -198,8 +198,11 @@ class CodexClient extends node_events_1.EventEmitter {
             return;
         }
         if (this.isRequest(message)) {
-            this.log(`Received unsupported server request: ${message.method}`);
-            this.sendErrorResponse(message.id, -32601, `Unsupported server request: ${message.method}`);
+            this.emit("serverRequest", {
+                id: message.id,
+                method: message.method,
+                params: message.params
+            });
             return;
         }
         if (this.isNotification(message)) {
@@ -238,16 +241,23 @@ class CodexClient extends node_events_1.EventEmitter {
             params
         });
     }
-    sendErrorResponse(id, code, message) {
-        if (!this.child) {
-            return;
-        }
-        this.write(this.child, {
+    sendResponse(id, result) {
+        const child = this.requireChild();
+        this.write(child, {
+            jsonrpc: "2.0",
+            id,
+            result
+        });
+    }
+    sendErrorResponse(id, code, message, data) {
+        const child = this.requireChild();
+        this.write(child, {
             jsonrpc: "2.0",
             id,
             error: {
                 code,
-                message
+                message,
+                data
             }
         });
     }

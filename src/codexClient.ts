@@ -51,6 +51,12 @@ export type CodexNotification = {
   params?: any;
 };
 
+export type CodexServerRequest = {
+  id: JsonRpcId;
+  method: string;
+  params?: any;
+};
+
 type ThreadStartResult = {
   thread: {
     id: string;
@@ -258,8 +264,11 @@ export class CodexClient extends EventEmitter {
     }
 
     if (this.isRequest(message)) {
-      this.log(`Received unsupported server request: ${message.method}`);
-      this.sendErrorResponse(message.id, -32601, `Unsupported server request: ${message.method}`);
+      this.emit("serverRequest", {
+        id: message.id,
+        method: message.method,
+        params: message.params
+      } satisfies CodexServerRequest);
       return;
     }
 
@@ -304,17 +313,24 @@ export class CodexClient extends EventEmitter {
     });
   }
 
-  private sendErrorResponse(id: JsonRpcId, code: number, message: string): void {
-    if (!this.child) {
-      return;
-    }
+  sendResponse(id: JsonRpcId, result: unknown): void {
+    const child = this.requireChild();
+    this.write(child, {
+      jsonrpc: "2.0",
+      id,
+      result
+    });
+  }
 
-    this.write(this.child, {
+  sendErrorResponse(id: JsonRpcId, code: number, message: string, data?: unknown): void {
+    const child = this.requireChild();
+    this.write(child, {
       jsonrpc: "2.0",
       id,
       error: {
         code,
-        message
+        message,
+        data
       }
     });
   }

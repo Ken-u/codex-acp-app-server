@@ -1,6 +1,6 @@
 import * as readline from "node:readline";
 import { randomUUID } from "node:crypto";
-import { CodexClient, type CodexNotification } from "./codexClient";
+import { CodexClient, type CodexNotification, type CodexServerRequest } from "./codexClient";
 import { SessionStore, type StoredSession } from "./sessionStore";
 
 type JsonRpcId = number | string;
@@ -10,6 +10,30 @@ type AcpRequest = {
   id: JsonRpcId;
   method: string;
   params?: any;
+};
+
+type JsonRpcResponse = {
+  jsonrpc?: "2.0";
+  id: JsonRpcId;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+};
+
+type StdinMessage = {
+  jsonrpc?: "2.0";
+  id?: JsonRpcId;
+  method?: string;
+  params?: any;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
 };
 
 type SessionState = {
@@ -30,10 +54,17 @@ export class Bridge {
   private readonly client: CodexClient;
   private readonly store: SessionStore;
   private readonly sessions = new Map<string, SessionState>();
+  private readonly pendingClientRequests = new Map<
+    JsonRpcId,
+    {
+      resolve: (value: unknown) => void;
+      reject: (reason: Error) => void;
+    }
+  >();
   private initialized = false;
   private stdinClosed = false;
   private activeRequests = 0;
-  private requestQueue: Promise<void> = Promise.resolve();
+  private nextClientRequestId = 1;
   constructor(client: CodexClient, cwd: string) {
     this.client = client;
     this.store = new SessionStore(cwd);
@@ -48,11 +79,10 @@ export class Bridge {
 
     rl.on("line", (line: string) => {
       this.activeRequests += 1;
-      this.requestQueue = this.requestQueue
-        .catch(() => {
-          return;
+      void this.handleLine(line)
+        .catch((error) => {
+          this.log(`Failed to handle stdin line: ${this.toErrorMessage(error)}`);
         })
-        .then(() => this.handleLine(line))
         .finally(() => {
           this.activeRequests -= 1;
           this.maybeShutdown();
@@ -77,14 +107,20 @@ export class Bridge {
       return;
     }
 
-    let request: AcpRequest;
+    let message: StdinMessage;
     try {
-      request = JSON.parse(trimmed) as AcpRequest;
+      message = JSON.parse(trimmed) as StdinMessage;
     } catch (error) {
       this.log(`Ignoring invalid stdin JSON: ${String(error)}: ${trimmed}`);
       return;
     }
 
+    if (this.isClientResponse(message)) {
+      this.handleClientResponse(message);
+      return;
+    }
+
+    const request = message as AcpRequest;
     if (typeof request.id === "undefined" || typeof request.method !== "string") {
       this.log(`Ignoring invalid request envelope: ${trimmed}`);
       return;
@@ -521,13 +557,22 @@ export class Bridge {
         reject(error);
       };
 
+      const onServerRequest = (request: CodexServerRequest) => {
+        void this.handleCodexServerRequest(sessionId, threadId, turnId, request).catch((error) => {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+      };
+
       const cleanup = () => {
         this.client.off("notification", onNotification);
         this.client.off("fatalError", onFatalError);
+        this.client.off("serverRequest", onServerRequest);
       };
 
       this.client.on("notification", onNotification);
       this.client.on("fatalError", onFatalError);
+      this.client.on("serverRequest", onServerRequest);
 
       try {
         const started = await this.client.startTurn(threadId, text, options.collaborationMode);
@@ -578,6 +623,218 @@ export class Bridge {
 
   private write(payload: unknown): void {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  private isClientResponse(message: StdinMessage): message is JsonRpcResponse {
+    return typeof message.id !== "undefined" && typeof message.method === "undefined";
+  }
+
+  private handleClientResponse(message: JsonRpcResponse): void {
+    const pending = this.pendingClientRequests.get(message.id);
+    if (!pending) {
+      this.log(`Ignoring unexpected client response for id ${String(message.id)}`);
+      return;
+    }
+
+    this.pendingClientRequests.delete(message.id);
+    if (message.error) {
+      pending.reject(new Error(this.describeJsonRpcError(message.error)));
+      return;
+    }
+
+    pending.resolve(message.result);
+  }
+
+  private async handleCodexServerRequest(
+    sessionId: string,
+    threadId: string,
+    turnId: string | undefined,
+    request: CodexServerRequest
+  ): Promise<void> {
+    switch (request.method) {
+      case "item/tool/requestUserInput": {
+        const result = await this.collectUserInput(sessionId, threadId, turnId, request.params);
+        this.client.sendResponse(request.id, result);
+        return;
+      }
+
+      default:
+        this.log(`Received unsupported server request: ${request.method}`);
+        this.client.sendErrorResponse(request.id, -32601, `Unsupported server request: ${request.method}`);
+    }
+  }
+
+  private async collectUserInput(
+    sessionId: string,
+    threadId: string,
+    turnId: string | undefined,
+    params: any
+  ): Promise<{ answers: Record<string, { answers: string[] }> }> {
+    const questions = Array.isArray(params?.questions) ? params.questions : [];
+    if (questions.length === 0) {
+      throw new Error("requestUserInput did not contain any questions");
+    }
+
+    const answers: Record<string, { answers: string[] }> = {};
+    for (const question of questions) {
+      if (!question || typeof question !== "object" || typeof question.id !== "string") {
+        continue;
+      }
+
+      const response = await this.collectSingleAnswer(sessionId, threadId, turnId, question);
+      answers[question.id] = {
+        answers: response
+      };
+    }
+
+    return { answers };
+  }
+
+  private async collectSingleAnswer(
+    sessionId: string,
+    threadId: string,
+    turnId: string | undefined,
+    question: any
+  ): Promise<string[]> {
+    if (Array.isArray(question.options) && question.options.length > 0) {
+      return this.requestPermissionAnswer(sessionId, threadId, turnId, question);
+    }
+
+    return this.requestCustomUserInput(sessionId, threadId, turnId, question);
+  }
+
+  private async requestPermissionAnswer(
+    sessionId: string,
+    threadId: string,
+    turnId: string | undefined,
+    question: any
+  ): Promise<string[]> {
+    const permissionKinds = [
+      "allow_once",
+      "allow_always",
+      "reject_once",
+      "reject_always"
+    ] as const;
+    const options = question.options
+      .map((option: any, index: number) => {
+        if (
+          !option ||
+          typeof option !== "object" ||
+          typeof option.label !== "string" ||
+          index >= permissionKinds.length
+        ) {
+          return null;
+        }
+
+        return {
+          optionId: `choice-${index}`,
+          name: option.label,
+          kind: permissionKinds[index],
+          _meta:
+            typeof option.description === "string" && option.description.trim() !== ""
+              ? { description: option.description }
+              : undefined
+        };
+      })
+      .filter(
+        (
+          option: unknown
+        ): option is {
+          optionId: string;
+          name: string;
+          kind: (typeof permissionKinds)[number];
+          _meta?: { description: string };
+        } => Boolean(option)
+      );
+
+    if (options.length === 0) {
+      return this.requestCustomUserInput(sessionId, threadId, turnId, question);
+    }
+
+    const permissionResult = (await this.sendClientRequest("session/request_permission", {
+      sessionId,
+      toolCall: {
+        toolCallId: `request-user-input:${question.id}`,
+        title: typeof question.question === "string" ? question.question : "User input requested",
+        kind: "other",
+        status: "pending",
+        rawInput: {
+          threadId,
+          turnId,
+          question
+        }
+      },
+      options
+    })) as {
+      outcome?: {
+        outcome?: string;
+        optionId?: string;
+      };
+    };
+
+    const outcome = permissionResult?.outcome?.outcome;
+    if (outcome !== "selected") {
+      throw new Error(`User input request was not completed: ${outcome ?? "cancelled"}`);
+    }
+
+    const selected = options.find(
+      (option: {
+        optionId: string;
+        name: string;
+        kind: (typeof permissionKinds)[number];
+        _meta?: { description: string };
+      }) =>
+        option.optionId === permissionResult.outcome?.optionId
+    );
+    if (!selected) {
+      throw new Error("User input request returned an unknown option");
+    }
+
+    return [selected.name];
+  }
+
+  private async requestCustomUserInput(
+    sessionId: string,
+    threadId: string,
+    turnId: string | undefined,
+    question: any
+  ): Promise<string[]> {
+    const result = (await this.sendClientRequest("_codex/request_user_input", {
+      sessionId,
+      threadId,
+      turnId,
+      question
+    })) as {
+      answers?: string[];
+    };
+
+    if (!result || !Array.isArray(result.answers) || result.answers.length === 0) {
+      throw new Error("User input request returned no answers");
+    }
+
+    return result.answers.filter((answer): answer is string => typeof answer === "string" && answer.trim() !== "");
+  }
+
+  private sendClientRequest(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextClientRequestId++;
+
+    return new Promise<unknown>((resolve, reject) => {
+      this.pendingClientRequests.set(id, { resolve, reject });
+      this.write({
+        jsonrpc: "2.0",
+        id,
+        method,
+        params
+      });
+    });
+  }
+
+  private describeJsonRpcError(error: { code: number; message: string; data?: unknown }): string {
+    if (typeof error.data === "undefined") {
+      return `RPC ${error.code}: ${error.message}`;
+    }
+
+    return `RPC ${error.code}: ${error.message} (${JSON.stringify(error.data)})`;
   }
 
   private formatPlan(explanation: unknown, plan: unknown): string {
